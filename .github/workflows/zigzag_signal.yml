@@ -3,7 +3,7 @@ name: ZigZag BTC Signal
 on:
   schedule:
     # Minden 30 percben fut (UTC)
-    - cron: '0,30 * * * *'
+    - cron: '0,00 * * * *'
   workflow_dispatch:  # Kezi inditas is lehetseges
 
 jobs:

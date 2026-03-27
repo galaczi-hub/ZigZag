@@ -325,6 +325,7 @@ def main():
                 f"💰 Belépés: {close_price:.2f}\n"
                 f"🎯 TP: {tp:.2f}\n"
                 f"🛑 SL: {sl:.2f}"
+                f" ZigZag-github: {sl:.2f}"
             )
             send_telegram(msg)
         else:

@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt requests ctrader-sdk
+        
       - name: Checkout repository
         uses: actions/checkout@v4
 

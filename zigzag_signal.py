@@ -2,6 +2,7 @@
 """
 ZigZag PA Trader - Pine Script logika Python-ban
 GitHub Actions futtatja 5 percenként
+ctrader-sdk alapú order kezelés
 """
 
 import os
@@ -18,7 +19,7 @@ from datetime import datetime, timezone
 # ============================================================
 CTRADER_CLIENT_ID     = os.environ.get("CTRADER_CLIENT_ID", "")
 CTRADER_CLIENT_SECRET = os.environ.get("CTRADER_CLIENT_SECRET", "")
-CTRADER_ACCOUNT_ID    = os.environ.get("CTRADER_ACCOUNT_ID", "")  # demo account ID
+CTRADER_ACCOUNT_ID    = os.environ.get("CTRADER_ACCOUNT_ID", "")
 CTRADER_ACCESS_TOKEN  = os.environ.get("CTRADER_ACCESS_TOKEN", "")
 TELEGRAM_TOKEN        = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID      = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -30,11 +31,8 @@ LOT_SIZE      = 0.01
 FIB_EW        = 0.236
 FIB_TP        = 0.618
 FIB_SL        = -0.236
-MIN_MOVE_PCT  = 0.2   # ZigZag minimum mozgás % (0.2 = finomabb, több jel)
-CANDLES_LIMIT = 500   # hány gyertyát kérünk le
-
-# cTrader API
-CTRADER_API   = "https://api.tradelocker.com"  # vagy Pepperstone endpoint
+MIN_MOVE_PCT  = 0.2
+CANDLES_LIMIT = 500
 
 # ============================================================
 # TELEGRAM
@@ -53,12 +51,11 @@ def send_telegram(msg):
         print(f"Telegram hiba: {e}")
 
 # ============================================================
-# ADATOK LETÖLTÉSE - CCXT + Bitstamp (mint a TV)
+# ADATOK LETÖLTÉSE - CCXT + Bitstamp
 # ============================================================
 def get_candles():
     exchange = ccxt.bitstamp()
     ohlcv = exchange.fetch_ohlcv("BTC/USD", TIMEFRAME, limit=CANDLES_LIMIT)
-    # [timestamp, open, high, low, close, volume]
     candles = [{
         "ts":    c[0],
         "open":  c[1],
@@ -71,15 +68,14 @@ def get_candles():
     return candles
 
 # ============================================================
-# ZIGZAG - ZigZagTV_v2 logika Python-ban
-# TV Pine Script: isUp = close >= open, irányváltás + min mozgás
+# ZIGZAG
 # ============================================================
 def build_zigzag(candles):
     zz = []
     direction = 0
     last_zz_price = 0
 
-    for i in range(1, len(candles) - 1):  # utolso nyitott kihagyva
+    for i in range(1, len(candles) - 1):
         c = candles[i]
         p = candles[i-1]
 
@@ -115,7 +111,7 @@ def add_zz_point(zz, price, is_high):
         zz.append({"price": price, "is_high": is_high})
 
 # ============================================================
-# FIBONACCI ARÁNYOK - Pine Script 1:1
+# FIBONACCI
 # ============================================================
 def calc_ratios(x, a, b, c, d):
     if abs(x-a) < 0.001 or abs(a-b) < 0.001 or abs(b-c) < 0.001:
@@ -132,7 +128,7 @@ def fib_level(d, c, rate):
     return (d - r * rate) if d > c else (d + r * rate)
 
 # ============================================================
-# MINTA FELISMERÉS - Pine Script 1:1
+# MINTA FELISMERÉS
 # ============================================================
 def is_bull(d, c): return d < c
 def is_bear(d, c): return d > c
@@ -174,66 +170,63 @@ def check_patterns(x, a, b, c, d):
     return None, None
 
 # ============================================================
-# CTRADER API - Pepperstone demo
+# CTRADER-SDK ALAPÚ TRADING
 # ============================================================
-def get_ctrader_token():
-    """Access token visszaadasa - kozvetlenul hasznaljuk"""
-    if CTRADER_ACCESS_TOKEN:
-        print("Access token hasznalata")
-        return CTRADER_ACCESS_TOKEN
-    print("HIBA: CTRADER_ACCESS_TOKEN hiányzik!")
-    return ""
+def get_bot():
+    """CTraderBot példány létrehozása"""
+    try:
+        from ctrader_sdk import CTraderBot
+        bot = CTraderBot(
+            CTRADER_CLIENT_ID,
+            CTRADER_CLIENT_SECRET,
+            CTRADER_ACCESS_TOKEN,
+            int(CTRADER_ACCOUNT_ID)
+        )
+        print("cTrader bot inicializálva")
+        return bot
+    except Exception as e:
+        print(f"Bot init hiba: {e}")
+        return None
 
-def get_open_positions(token):
+def get_open_positions(bot):
     """Nyitott pozíciók lekérése"""
     try:
-        resp = requests.get(
-            f"https://connect.spotware.com/apps/v2/webapi/accounts/{CTRADER_ACCOUNT_ID}/positions",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
-        print(f"Poziciok: {resp.status_code}")
-        return resp.json().get("position", []) if resp.status_code == 200 else []
+        positions = bot.get_positions()
+        print(f"Poziciok: {len(positions) if positions else 0} db")
+        return positions if positions else []
     except Exception as e:
         print(f"Pozíció lekérés hiba: {e}")
         return []
 
-def open_position(token, direction, volume, label):
-    """Pozíció nyitás"""
+def open_position(bot, direction, volume, tp, sl):
+    """Pozíció nyitás TP és SL szintekkel"""
     try:
-        side = "BUY" if direction == "BUY" else "SELL"
-        resp = requests.post(
-            f"https://connect.spotware.com/apps/v2/webapi/accounts/{CTRADER_ACCOUNT_ID}/orders",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "symbolName": SYMBOL,
-                "orderType": "MARKET",
-                "tradeSide": side,
-                "volume": int(volume * 1000000),  # cTrader: 1 lot BTC = 1,000,000 units
-                "label": label
-            },
-            timeout=10
+        # ctrader-sdk: volume = lots * 100 (BTCUSD esetén 1 lot = 1 BTC)
+        # 0.01 lot = 1000 unit (cTrader egység)
+        result = bot.place_order(
+            symbol=SYMBOL,
+            volume=int(volume * 100000),  # 0.01 lot → 1000 unit
+            direction=direction,
+            order_type="MARKET",
+            take_profit=round(tp, 2),
+            stop_loss=round(sl, 2)
         )
-        return resp.json()
+        print(f"Order eredmény: {result}")
+        return result
     except Exception as e:
         print(f"Pozíció nyitás hiba: {e}")
         return None
 
-def close_position(token, position_id):
-    """Pozíció zárás"""
-    try:
-        resp = requests.delete(
-            f"https://connect.spotware.com/apps/v2/webapi/accounts/{CTRADER_ACCOUNT_ID}/positions/{position_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
-        return resp.json()
-    except Exception as e:
-        print(f"Pozíció zárás hiba: {e}")
-        return None
+def close_all_positions(bot, positions):
+    """Összes pozíció zárása"""
+    for pos in positions:
+        try:
+            pos_id = pos.get("positionId") or pos.get("id")
+            if pos_id:
+                bot.close_position(pos_id)
+                print(f"Pozíció zárva: {pos_id}")
+        except Exception as e:
+            print(f"Zárás hiba: {e}")
 
 # ============================================================
 # FŐ LOGIKA
@@ -256,7 +249,7 @@ def main():
         print("Nincs elég ZigZag pont")
         return
 
-    # 3. XABCD pontok - Pine Script: valuewhen(sz,sz,4..0)
+    # 3. XABCD pontok
     d = zz[-1]["price"]
     c = zz[-2]["price"]
     b = zz[-3]["price"]
@@ -265,16 +258,16 @@ def main():
 
     print(f"X={x:.0f} A={a:.0f} B={b:.0f} C={c:.0f} D={d:.0f}")
 
-    # 4. Fibonacci szintek - Pine Script 1:1
+    # 4. Fibonacci szintek
     ew = fib_level(d, c, FIB_EW)
     tp = fib_level(d, c, FIB_TP)
     sl = fib_level(d, c, FIB_SL)
 
     # 5. Minta felismerés
     signal, pattern = check_patterns(x, a, b, c, d)
-    close_price = candles[-2]["close"]  # utolso lezart gyertya
+    close_price = candles[-2]["close"]
 
-    # Ratios debug
+    # Debug
     r = calc_ratios(x, a, b, c, d)
     if r:
         print(f"XAB={r['xab']:.3f} ABC={r['abc']:.3f} BCD={r['bcd']:.3f} XAD={r['xad']:.3f}")
@@ -282,9 +275,7 @@ def main():
     print(f"Minta: {pattern} | Jel: {signal}")
     print(f"EW={ew:.2f} TP={tp:.2f} SL={sl:.2f} | close={close_price:.2f}")
 
-    # 6. Belépési feltétel - Pine Script 1:1
-    # target01_buy_entry = (buy_patterns) and close <= f_last_fib(ew_rate)
-    # target01_sel_entry = (sel_patterns) and close >= f_last_fib(ew_rate)
+    # 6. Belépési feltétel
     entry_buy  = signal == "BUY"  and close_price <= ew
     entry_sell = signal == "SELL" and close_price >= ew
 
@@ -294,43 +285,53 @@ def main():
         print("Nincs belépési jel")
         return
 
-    # 7. cTrader API - pozíció kezelés
-    if not CTRADER_CLIENT_ID:
-        print("cTrader credentials hiányoznak - csak Telegram jel küldés")
-        direction = "BUY" if entry_buy else "SELL"
+    direction = "BUY" if entry_buy else "SELL"
+
+    # 7. Csak Telegram ha nincs cTrader konfig
+    if not CTRADER_CLIENT_ID or not CTRADER_ACCESS_TOKEN:
+        print("cTrader credentials hiányoznak - csak Telegram jel")
         msg = f"⚡ <b>{SYMBOL} {direction}</b>\n📊 {pattern}\n💰 {close_price:.2f}\n🎯 TP={tp:.2f} 🛑 SL={sl:.2f}"
         send_telegram(msg)
         return
 
-    token = get_ctrader_token()
-    if not token:
-        print("Token hiba")
+    # 8. cTrader trading
+    bot = get_bot()
+    if not bot:
+        print("Bot inicializálás sikertelen")
         return
 
-    positions = get_open_positions(token)
+    positions = get_open_positions(bot)
     our_pos = [p for p in positions if p.get("label") == "ZZpy"]
 
-    # Pozíció zárása ha ellentétes irány
+    # Ellentétes pozíció zárása
     for pos in our_pos:
-        pos_side = pos.get("tradeSide", "")
+        pos_side = pos.get("tradeSide", "").upper()
         if (entry_buy and pos_side == "SELL") or (entry_sell and pos_side == "BUY"):
-            result = close_position(token, pos["positionId"])
-            print(f"Pozíció zárva: {pos['positionId']}")
+            close_all_positions(bot, [pos])
             send_telegram(f"🔴 <b>{SYMBOL} ZARVA</b>\nEllentétes jel")
 
-    # Új pozíció nyitása ha nincs nyitott
-    our_pos = [p for p in get_open_positions(token) if p.get("label") == "ZZpy"]
+    # Frissített pozíciólist
+    positions = get_open_positions(bot)
+    our_pos = [p for p in positions if p.get("label") == "ZZpy"]
+
+    # Új pozíció nyitása ha nincs
     if not our_pos:
-        direction = "BUY" if entry_buy else "SELL"
-        result = open_position(token, direction, LOT_SIZE, "ZZpy")
+        result = open_position(bot, direction, LOT_SIZE, tp, sl)
         if result:
-            print(f"Pozíció nyitva: {direction} @ {close_price:.2f}")
-            msg = f"⚡ <b>{SYMBOL} {direction}</b>\n📊 {pattern}\n💰 {close_price:.2f}\n🎯 TP={tp:.2f} 🛑 SL={sl:.2f}"
+            print(f"✅ Pozíció nyitva: {direction} @ {close_price:.2f}")
+            msg = (
+                f"⚡ <b>{SYMBOL} {direction}</b>\n"
+                f"📊 Minta: {pattern}\n"
+                f"💰 Belépés: {close_price:.2f}\n"
+                f"🎯 TP: {tp:.2f}\n"
+                f"🛑 SL: {sl:.2f}"
+            )
             send_telegram(msg)
         else:
-            print("Pozíció nyitás sikertelen")
+            print("❌ Pozíció nyitás sikertelen")
+            send_telegram(f"❌ <b>{SYMBOL} {direction} SIKERTELEN</b>\n{pattern} @ {close_price:.2f}")
     else:
-        print(f"Már van nyitott pozíció: {len(our_pos)} db")
+        print(f"ℹ️ Már van nyitott pozíció: {len(our_pos)} db")
 
 if __name__ == "__main__":
     main()

@@ -282,7 +282,7 @@ def main():
     print(f"EntryBuy={entry_buy} EntrySell={entry_sell}")
 
     if not entry_buy and not entry_sell:
-        print("Nincs belépési jel")
+        print("Nincs belépési jel gitzig")
         return
 
     direction = "BUY" if entry_buy else "SELL"
@@ -290,14 +290,14 @@ def main():
     # 7. Csak Telegram ha nincs cTrader konfig
     if not CTRADER_CLIENT_ID or not CTRADER_ACCESS_TOKEN:
         print("cTrader credentials hiányoznak - csak Telegram jel")
-        msg = f"⚡ <b>{SYMBOL} {direction}</b>\n📊 {pattern}\n💰 {close_price:.2f}\n🎯 TP={tp:.2f} 🛑 SL={sl:.2f}"
+        msg = f"⚡ <b>{SYMBOL} {direction}</b>\n📊 {pattern}\n💰 {close_price:.2f}\n🎯 TP={tp:.2f} 🛑 SL={sl:.2f} gitzig"
         send_telegram(msg)
         return
 
     # 8. cTrader trading
     bot = get_bot()
     if not bot:
-        print("Bot inicializálás sikertelen")
+        print("Bot inicializálás sikertelen gitzig")
         return
 
     positions = get_open_positions(bot)
@@ -329,7 +329,7 @@ def main():
             )
             send_telegram(msg)
         else:
-            print("❌ Pozíció nyitás sikertelen")
+            print("❌ Pozíció nyitás sikertelen gitzig")
             send_telegram(f"❌ <b>{SYMBOL} {direction} SIKERTELEN</b>\n{pattern} @ {close_price:.2f}")
     else:
         print(f"ℹ️ Már van nyitott pozíció: {len(our_pos)} db")
